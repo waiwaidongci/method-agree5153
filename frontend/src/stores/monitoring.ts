@@ -1,0 +1,2 @@
+import {defineStore} from 'pinia';import {ref} from 'vue';import {getMonitors,getMonitor} from '../api/monitors';import type {Monitor,MonitorDetail} from '../types/domain';
+export const useMonitoring=defineStore('monitoring',()=>{const monitors=ref<Monitor[]>([]),current=ref<MonitorDetail|null>(null);async function load(){monitors.value=await getMonitors();}async function loadOne(id:number){current.value=await getMonitor(id);}return {monitors,current,load,loadOne};});

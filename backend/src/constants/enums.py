@@ -14,3 +14,9 @@ class QualificationMode(StrEnum):
 class QualificationStatus(StrEnum):
     DRAFT="draft"
     APPROVED="approved"
+class MonitoringStatus(StrEnum):
+    DRAFT="draft"
+    QUEUED="queued"
+    RUNNING="running"
+    COMPLETED="completed"
+    FAILED="failed"

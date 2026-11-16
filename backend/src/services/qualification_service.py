@@ -1,9 +1,12 @@
-import csv,io
+import csv,io,json
 from sqlalchemy import select
 from fastapi import HTTPException
 from src.models import Qualification,ComparisonRun
 from src.constants.enums import RunStatus,QualificationMode,QualificationStatus
-def list_qualifications(db):return db.scalars(select(Qualification).order_by(Qualification.id.desc())).all()
+from src.services.monitoring_service import qualification_monitoring_summary
+def _with_monitoring(db,item):
+    return {"id":item.id,"title":item.title,"run_id":item.run_id,"mode":item.mode,"scope_low":item.scope_low,"scope_high":item.scope_high,"note":item.note,"status":item.status,"approved_by":item.approved_by,"created_at":item.created_at,"monitoring":qualification_monitoring_summary(db,item.run_id)}
+def list_qualifications(db):return [_with_monitoring(db,q) for q in db.scalars(select(Qualification).order_by(Qualification.id.desc())).all()]
 def validate_scope(run,mode,low,high):
     if run.status!=RunStatus.COMPLETED:raise HTTPException(409,"研究尚未完成")
     if low<run.result['x_range'][0]-1e-9 or high>run.result['x_range'][1]+1e-9:raise HTTPException(422,"资格范围必须包含在本次实际观测X范围内")
@@ -25,6 +28,13 @@ def export_qualification(db,id):
     if item.status!=QualificationStatus.APPROVED:raise HTTPException(409,"先由负责人批准资格档案")
     run=db.get(ComparisonRun,item.run_id);result=run.result
     output=io.StringIO();output.write("\ufeff");writer=csv.writer(output)
+    monitoring=qualification_monitoring_summary(db,run.id)
+    writer.writerow(['# qualification_status',item.status])
+    writer.writerow(['# qualification_conclusion','preserved as approved on '+str(item.created_at)])
+    writer.writerow(['# monitoring',json.dumps(monitoring,ensure_ascii=False,sort_keys=True)])
+    writer.writerow(['# monitoring_first_failure_date',monitoring[0]['first_failure_date'] if monitoring and monitoring[0]['first_failure_date'] else ''])
+    writer.writerow(['# monitoring_first_failure_batches',json.dumps(monitoring[0]['basis_batches'],ensure_ascii=False,sort_keys=True) if monitoring else '[]'])
+    writer.writerow(['# monitoring_current_streak_batches',json.dumps(monitoring[0]['current_streak_batches'],ensure_ascii=False,sort_keys=True) if monitoring else '[]'])
     writer.writerow(['sample_code','reference_pct','candidate_pct','difference_pct','inverse_calibrated_pct','mode','scope_low','scope_high','run_fingerprint'])
     for point in result['points']:
         if item.scope_low<=point['x']<=item.scope_high:

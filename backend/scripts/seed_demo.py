@@ -1,7 +1,11 @@
 import random,json
 from sqlalchemy import select,func
 from src.config.database import Base,engine,Session
-from src.models import User,Instrument,PairDataset,PairedReading,ComparisonRun,Qualification
+from src.models import User,Instrument,PairDataset,PairedReading,ComparisonRun,Qualification,MonitoringProfile,MonitoringBatch
+from src.schemas.monitoring import MonitorInput,BatchInput
+from src.services.monitoring_service import create_monitor,ingest_batch,execute_evaluation
+from src.models import MonitoringEvaluation
+from sqlalchemy import func as _count
 from src.utils.security import hash_password
 from src.services.run_service import execute_run
 
@@ -33,5 +37,36 @@ def seed():
         if first and first.status=='completed' and not db.scalar(select(Qualification).where(Qualification.title=='N02稳定光源资格 · 10–85%')):
             db.add(Qualification(title='N02稳定光源资格 · 10–85%',run_id=first.id,mode='raw',scope_low=10,scope_high=85,note='稳定光源条件下使用；仅覆盖本次参考反射率范围，不延伸到便携仪或其他光源。',status='approved',approved_by='admin@ciguang.demo'))
         db.commit()
-        print(json.dumps({m.__tablename__:db.scalar(select(func.count()).select_from(m)) for m in (User,Instrument,PairDataset,PairedReading,ComparisonRun,Qualification)},ensure_ascii=False))
+        _seed_monitoring(db)
+        print(json.dumps({m.__tablename__:db.scalar(select(func.count()).select_from(m)) for m in (User,Instrument,PairDataset,PairedReading,ComparisonRun,Qualification,MonitoringProfile,MonitoringBatch)},ensure_ascii=False))
+
+def _seed_monitoring(db):
+    """Freeze the stable-light N02 run as a baseline and add a few independent daily batches."""
+    from datetime import date,timedelta
+    run=db.scalar(select(ComparisonRun).where(ComparisonRun.name=='N02 · 稳定光源配对 / λ=1'))
+    if not run or run.status!='completed':return
+    user=db.scalar(select(User).where(User.email=='analyst@ciguang.demo'))
+    name='N02 · 每日批次漂移监测'
+    monitor=db.scalar(select(MonitoringProfile).where(MonitoringProfile.name==name))
+    if not monitor:
+        create_monitor(db,MonitorInput(name=name,baseline_run_id=run.id,consecutive_limit=3,note='每日独立试件批次，按采样日期顺序与冻结的稳定光源基线比较；缓慢漂移用于演示连续超限告警。'),user)
+        monitor=db.scalar(select(MonitoringProfile).where(MonitoringProfile.name==name))
+    drift_rng=random.Random(911)
+    offsets=[.05,.12,.18,2.45,2.6,2.75]
+    start=date(2026,10,28)
+    for index,offset in enumerate(offsets):
+        sampling=start+timedelta(days=index)
+        key=f'D{index+1:02d}'
+        if db.scalar(select(MonitoringBatch).where(MonitoringBatch.monitor_id==monitor.id,MonitoringBatch.batch_key==key)):continue
+        lines=['sample_code,reference_value,candidate_value']
+        for j in range(24):
+            x=round(12+drift_rng.random()*70,4)
+            y=round(x+monitor.baseline['bias']+offset+drift_rng.gauss(0,.22),4)
+            y=min(max(y,.01),99.99)
+            lines.append(f'D{index+1}-{j+1:03d},{x},{y}')
+        ingest_batch(db,monitor.id,BatchInput(batch_key=key,sampling_date=sampling,source_file='daily-optics-batches.csv',note='独立陶瓷试片每日一批。',csv_text='\n'.join(lines)+'\n'),user)
+    while True:
+        pending=db.scalar(select(MonitoringEvaluation).where(MonitoringEvaluation.monitor_id==monitor.id,MonitoringEvaluation.status.in_(['queued','running'])).order_by(MonitoringEvaluation.version))
+        if not pending:break
+        execute_evaluation(db,pending.id)
 if __name__=='__main__':seed()

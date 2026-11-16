@@ -31,3 +31,6 @@ target/
 *.o
 *.obj
 .DS_Store
+
+# test artifacts from local runs
+test-artifacts/
